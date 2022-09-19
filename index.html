@@ -411,532 +411,528 @@ let outputs = {
   }
 };
 
-let rnn = new mm.MusicRNN(
+const rnn = new mm.MusicRNN(
   'https://storage.googleapis.com/download.magenta.tensorflow.org/tfjs_checkpoints/music_rnn/drum_kit_rnn'
 );
-let vae = new mm.MusicVAE(
+const vae = new mm.MusicVAE(
   'https://storage.googleapis.com/download.magenta.tensorflow.org/tfjs_checkpoints/music_vae/drums_2bar_hikl_small'
 );
-Promise.all([
+const [vars] = await Promise.all([
   rnn.initialize(),
   vae.initialize(),
   new Promise(res => Tone.Buffer.on('load', res))
-]).then(([vars]) => {
+]);
   
 
-  let state = {
-    patternLength: 32,
-    seedLength: 4,
-    swing: 0.55,
-    pattern: [[0], [], [2]].concat(_.times(32, i => [])),
-    tempo: 120
-  };
-  let stepEls = [],
-    hasBeenStarted = false,
-    sequence,
-    densityRange = null,
-    activeOutput = 'internal';
+const state = {
+  patternLength: 32,
+  seedLength: 4,
+  swing: 0.55,
+  pattern: [[0], [], [2]].concat(_.times(32, i => [])),
+  tempo: 120
+};
+let stepEls = [];
+let hasBeenStarted = false;
+let sequence;
+let densityRange = null;
+let activeOutput = 'internal';
 
-  function generatePattern(seed, length) {
-    let seedSeq = toNoteSequence(seed);
-    return rnn
-      .continueSequence(seedSeq, length, temperature)
-      .then(r => seed.concat(fromNoteSequence(r, length)));
+async function generatePattern(seed, length) {
+  const seedSeq = toNoteSequence(seed);
+  const r = await rnn.continueSequence(seedSeq, length, temperature);
+  return seed.concat(fromNoteSequence(r, length));
+}
+
+function getStepVelocity(step) {
+  if (step % 4 === 0) {
+    return 'high';
+  } else if (step % 2 === 0) {
+    return 'med';
+  } else {
+    return 'low';
   }
+}
 
-  function getStepVelocity(step) {
-    if (step % 4 === 0) {
-      return 'high';
-    } else if (step % 2 === 0) {
-      return 'med';
+function humanizeTime(time) {
+  return time - TIME_HUMANIZATION / 2 + Math.random() * TIME_HUMANIZATION;
+}
+
+function playPattern() {
+  sequence = new Tone.Sequence(
+    (time, { drums, stepIdx }) => {
+      let isSwung = stepIdx % 2 !== 0;
+      if (isSwung) {
+        time += (state.swing - 0.5) * Tone.Time('8n').toSeconds();
+      }
+      let velocity = getStepVelocity(stepIdx);
+      drums.forEach(d => {
+        let humanizedTime = stepIdx === 0 ? time : humanizeTime(time);
+        outputs[activeOutput].play(d, velocity, time);
+        visualizePlay(humanizedTime, stepIdx, d);
+      });
+    },
+    state.pattern.map((drums, stepIdx) => ({ drums, stepIdx })),
+    '16n'
+  ).start();
+}
+
+function visualizePlay(time, stepIdx, drumIdx) {
+  Tone.Draw.schedule(() => {
+    if (!stepEls[stepIdx]) return;
+    let animTime = Tone.Time('2n').toMilliseconds();
+    let cellEl = stepEls[stepIdx].cellEls[drumIdx];
+    if (cellEl.classList.contains('on')) {
+      let baseColor = stepIdx < state.seedLength ? '#e91e63' : '#64b5f6';
+      cellEl.animate(
+        [
+          {
+            transform: 'translateZ(-100px)',
+            backgroundColor: '#fad1df'
+          },
+          {
+            transform: 'translateZ(50px)',
+            offset: 0.7
+          },
+          { transform: 'translateZ(0)', backgroundColor: baseColor }
+        ],
+        { duration: animTime, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' }
+      );
+    }
+  }, time);
+}
+
+function renderPattern(regenerating = false) {
+  let seqEl = document.querySelector('.sequencer .steps');
+  while (stepEls.length > state.pattern.length) {
+    let { stepEl, gutterEl } = stepEls.pop();
+    stepEl.remove();
+    if (gutterEl) gutterEl.remove();
+  }
+  for (let stepIdx = 0; stepIdx < state.pattern.length; stepIdx++) {
+    let step = state.pattern[stepIdx];
+    let stepEl, gutterEl, cellEls;
+    if (stepEls[stepIdx]) {
+      stepEl = stepEls[stepIdx].stepEl;
+      gutterEl = stepEls[stepIdx].gutterEl;
+      cellEls = stepEls[stepIdx].cellEls;
     } else {
-      return 'low';
+      stepEl = document.createElement('div');
+      stepEl.classList.add('step');
+      stepEl.dataset.stepIdx = stepIdx;
+      seqEl.appendChild(stepEl);
+      cellEls = [];
     }
-  }
 
-  function humanizeTime(time) {
-    return time - TIME_HUMANIZATION / 2 + Math.random() * TIME_HUMANIZATION;
-  }
+    stepEl.style.flex = stepIdx % 2 === 0 ? state.swing : 1 - state.swing;
 
-  function playPattern() {
-    sequence = new Tone.Sequence(
-      (time, { drums, stepIdx }) => {
-        let isSwung = stepIdx % 2 !== 0;
-        if (isSwung) {
-          time += (state.swing - 0.5) * Tone.Time('8n').toSeconds();
-        }
-        let velocity = getStepVelocity(stepIdx);
-        drums.forEach(d => {
-          let humanizedTime = stepIdx === 0 ? time : humanizeTime(time);
-          outputs[activeOutput].play(d, velocity, time);
-          visualizePlay(humanizedTime, stepIdx, d);
-        });
-      },
-      state.pattern.map((drums, stepIdx) => ({ drums, stepIdx })),
-      '16n'
-    ).start();
-  }
-
-  function visualizePlay(time, stepIdx, drumIdx) {
-    Tone.Draw.schedule(() => {
-      if (!stepEls[stepIdx]) return;
-      let animTime = Tone.Time('2n').toMilliseconds();
-      let cellEl = stepEls[stepIdx].cellEls[drumIdx];
-      if (cellEl.classList.contains('on')) {
-        let baseColor = stepIdx < state.seedLength ? '#e91e63' : '#64b5f6';
-        cellEl.animate(
-          [
-            {
-              transform: 'translateZ(-100px)',
-              backgroundColor: '#fad1df'
-            },
-            {
-              transform: 'translateZ(50px)',
-              offset: 0.7
-            },
-            { transform: 'translateZ(0)', backgroundColor: baseColor }
-          ],
-          { duration: animTime, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' }
-        );
-      }
-    }, time);
-  }
-
-  function renderPattern(regenerating = false) {
-    let seqEl = document.querySelector('.sequencer .steps');
-    while (stepEls.length > state.pattern.length) {
-      let { stepEl, gutterEl } = stepEls.pop();
-      stepEl.remove();
-      if (gutterEl) gutterEl.remove();
+    if (!gutterEl && stepIdx < state.pattern.length - 1) {
+      gutterEl = document.createElement('div');
+      gutterEl.classList.add('gutter');
+      seqEl.insertBefore(gutterEl, stepEl.nextSibling);
+    } else if (gutterEl && stepIdx >= state.pattern.length) {
+      gutterEl.remove();
+      gutterEl = null;
     }
-    for (let stepIdx = 0; stepIdx < state.pattern.length; stepIdx++) {
-      let step = state.pattern[stepIdx];
-      let stepEl, gutterEl, cellEls;
-      if (stepEls[stepIdx]) {
-        stepEl = stepEls[stepIdx].stepEl;
-        gutterEl = stepEls[stepIdx].gutterEl;
-        cellEls = stepEls[stepIdx].cellEls;
+
+    if (gutterEl && stepIdx === state.seedLength - 1) {
+      gutterEl.classList.add('seed-marker');
+    } else if (gutterEl) {
+      gutterEl.classList.remove('seed-marker');
+    }
+
+    for (let cellIdx = 0; cellIdx < DRUM_CLASSES.length; cellIdx++) {
+      let cellEl;
+      if (cellEls[cellIdx]) {
+        cellEl = cellEls[cellIdx];
       } else {
-        stepEl = document.createElement('div');
-        stepEl.classList.add('step');
-        stepEl.dataset.stepIdx = stepIdx;
-        seqEl.appendChild(stepEl);
-        cellEls = [];
+        cellEl = document.createElement('div');
+        cellEl.classList.add('cell');
+        cellEl.classList.add(_.kebabCase(DRUM_CLASSES[cellIdx]));
+        cellEl.dataset.stepIdx = stepIdx;
+        cellEl.dataset.cellIdx = cellIdx;
+        stepEl.appendChild(cellEl);
+        cellEls[cellIdx] = cellEl;
       }
-
-      stepEl.style.flex = stepIdx % 2 === 0 ? state.swing : 1 - state.swing;
-
-      if (!gutterEl && stepIdx < state.pattern.length - 1) {
-        gutterEl = document.createElement('div');
-        gutterEl.classList.add('gutter');
-        seqEl.insertBefore(gutterEl, stepEl.nextSibling);
-      } else if (gutterEl && stepIdx >= state.pattern.length) {
-        gutterEl.remove();
-        gutterEl = null;
+      if (step.indexOf(cellIdx) >= 0) {
+        cellEl.classList.add('on');
+      } else {
+        cellEl.classList.remove('on');
       }
-
-      if (gutterEl && stepIdx === state.seedLength - 1) {
-        gutterEl.classList.add('seed-marker');
-      } else if (gutterEl) {
-        gutterEl.classList.remove('seed-marker');
-      }
-
-      for (let cellIdx = 0; cellIdx < DRUM_CLASSES.length; cellIdx++) {
-        let cellEl;
-        if (cellEls[cellIdx]) {
-          cellEl = cellEls[cellIdx];
-        } else {
-          cellEl = document.createElement('div');
-          cellEl.classList.add('cell');
-          cellEl.classList.add(_.kebabCase(DRUM_CLASSES[cellIdx]));
-          cellEl.dataset.stepIdx = stepIdx;
-          cellEl.dataset.cellIdx = cellIdx;
-          stepEl.appendChild(cellEl);
-          cellEls[cellIdx] = cellEl;
-        }
-        if (step.indexOf(cellIdx) >= 0) {
-          cellEl.classList.add('on');
-        } else {
-          cellEl.classList.remove('on');
-        }
-      }
-      stepEls[stepIdx] = { stepEl, gutterEl, cellEls };
-
-      let stagger = stepIdx * (300 / (state.patternLength - state.seedLength));
-      setTimeout(() => {
-        if (stepIdx < state.seedLength) {
-          stepEl.classList.add('seed');
-        } else {
-          stepEl.classList.remove('seed');
-          if (regenerating) {
-            stepEl.classList.add('regenerating');
-          } else {
-            stepEl.classList.remove('regenerating');
-          }
-        }
-      }, stagger);
     }
+    stepEls[stepIdx] = { stepEl, gutterEl, cellEls };
 
-    setTimeout(repositionRegenerateButton, 0);
-  }
-
-  function repositionRegenerateButton() {
-    let regenButton = document.querySelector('.regenerate');
-    let sequencerEl = document.querySelector('.sequencer');
-    let seedMarkerEl = document.querySelector('.gutter.seed-marker');
-    let regenLeft =
-      sequencerEl.offsetLeft +
-      seedMarkerEl.offsetLeft +
-      seedMarkerEl.offsetWidth / 2 -
-      regenButton.offsetWidth / 2;
-    let regenTop =
-      sequencerEl.offsetTop +
-      seedMarkerEl.offsetTop +
-      seedMarkerEl.offsetHeight / 2 -
-      regenButton.offsetHeight / 2;
-    regenButton.style.left = `${regenLeft}px`;
-    regenButton.style.top = `${regenTop}px`;
-    regenButton.style.visibility = 'visible';
-  }
-
-  function regenerate() {
-    let seed = _.take(state.pattern, state.seedLength);
-    renderPattern(true);
-    return generatePattern(seed, state.patternLength - seed.length).then(
-      result => {
-        state.pattern = result;
-        onPatternUpdated();
-        setDensityValue();
-        updateDensityRange();
+    let stagger = stepIdx * (300 / (state.patternLength - state.seedLength));
+    setTimeout(() => {
+      if (stepIdx < state.seedLength) {
+        stepEl.classList.add('seed');
+      } else {
+        stepEl.classList.remove('seed');
+        if (regenerating) {
+          stepEl.classList.add('regenerating');
+        } else {
+          stepEl.classList.remove('regenerating');
+        }
       }
-    );
+    }, stagger);
   }
-  
 
-  function onPatternUpdated() {
+  setTimeout(repositionRegenerateButton, 0);
+}
+
+function repositionRegenerateButton() {
+  let regenButton = document.querySelector('.regenerate');
+  let sequencerEl = document.querySelector('.sequencer');
+  let seedMarkerEl = document.querySelector('.gutter.seed-marker');
+  let regenLeft =
+    sequencerEl.offsetLeft +
+    seedMarkerEl.offsetLeft +
+    seedMarkerEl.offsetWidth / 2 -
+    regenButton.offsetWidth / 2;
+  let regenTop =
+    sequencerEl.offsetTop +
+    seedMarkerEl.offsetTop +
+    seedMarkerEl.offsetHeight / 2 -
+    regenButton.offsetHeight / 2;
+  regenButton.style.left = `${regenLeft}px`;
+  regenButton.style.top = `${regenTop}px`;
+  regenButton.style.visibility = 'visible';
+}
+
+async function regenerate() {
+  const seed = _.take(state.pattern, state.seedLength);
+  renderPattern(true);
+  const result = await generatePattern(seed, state.patternLength - seed.length);
+  state.pattern = result;
+  console.log(result);
+  onPatternUpdated();
+  setDensityValue();
+  updateDensityRange();
+}
+
+
+function onPatternUpdated() {
+  if (sequence) {
+    sequence.dispose();
+    sequence = null;
+  }
+  renderPattern();
+}
+
+function toggleStep(cellEl) {
+  if (state.pattern && cellEl.classList.contains('cell')) {
+    let stepIdx = +cellEl.dataset.stepIdx;
+    let cellIdx = +cellEl.dataset.cellIdx;
+    let isOn = cellEl.classList.contains('on');
+    if (isOn) {
+      _.pull(state.pattern[stepIdx], cellIdx);
+      cellEl.classList.remove('on');
+    } else {
+      state.pattern[stepIdx].push(cellIdx);
+      cellEl.classList.add('on');
+    }
+    if (sequence) {
+      sequence.at(stepIdx, { stepIdx, drums: state.pattern[stepIdx] });
+    }
+    setDensityValue();
+    densityRange = null;
+  }
+}
+
+function setDensityValue() {
+  let totalCellCount = state.pattern.length * 9;
+  let activeCellCount = _.sum(state.pattern.map(p => p.length));
+  let density = activeCellCount / totalCellCount;
+  let roundedDensity = Math.round(density / 0.05) * 0.05;
+  document.querySelector('#density').value = roundedDensity;
+}
+
+function updateDensityRange(
+  density = +document.querySelector('#density').value
+) {
+  let stepsDown = density / 0.05;
+  let stepsUp = (0.75 - density) / 0.05;
+  let stepsBeyond = 0.25 / 0.05;
+
+  let emptySeq = toNoteSequence([]);
+  let fullSeq = toNoteSequence(
+    _.times(state.pattern.length, () => _.range(9))
+  );
+  let currentSeq = toNoteSequence(state.pattern);
+
+  densityRange = [];
+  let interpsUp = stepsDown > 0 ? vae.interpolate([emptySeq, currentSeq], stepsDown) : Promise.resolve([]);
+  let interpsDown = stepsUp > 0 ? vae.interpolate(
+      [currentSeq, fullSeq],
+      stepsUp + stepsBeyond
+    ) : Promise.resolve([]);
+    
+  interpsDown.then(interps => {
+    for (let noteSeq of interps) {
+      densityRange.push(fromNoteSequence(noteSeq, state.pattern.length));
+    }
+  }).then(() => densityRange.push(state.pattern))
+    .then(() => interpsUp)
+    .then(interps => {
+      for (let noteSeq of interps) {
+        if (stepsUp-- > 0) {
+          densityRange.push(fromNoteSequence(noteSeq, state.pattern.length));
+        }
+      }
+    });
+}
+
+function toNoteSequence(pattern) {
+  return mm.sequences.quantizeNoteSequence(
+    {
+      ticksPerQuarter: 220,
+      totalTime: pattern.length / 2,
+      timeSignatures: [
+        {
+          time: 0,
+          numerator: 4,
+          denominator: 4
+        }
+      ],
+      tempos: [
+        {
+          time: 0,
+          qpm: 120
+        }
+      ],
+      notes: _.flatMap(pattern, (step, index) =>
+        step.map(d => ({
+          pitch: midiDrums[d],
+          startTime: index * 0.5,
+          endTime: (index + 1) * 0.5
+        }))
+      )
+    },
+    1
+  );
+}
+
+function fromNoteSequence({ notes }, patternLength) {
+  let res = _.times(patternLength, () => []);
+  for (let { pitch, quantizedStartStep } of notes) {
+    res[quantizedStartStep].push(reverseMidiMapping.get(pitch));
+  }
+  return res;
+}
+
+function setSwing(newSwing) {
+  state.swing = newSwing;
+  renderPattern();
+}
+
+function setPatternLength(newPatternLength) {
+  if (newPatternLength < state.patternLength) {
+    state.pattern.length = newPatternLength;
+  } else {
+    for (let i = state.pattern.length; i < newPatternLength; i++) {
+      state.pattern.push([]);
+    }
+  }
+  let lengthRatio = newPatternLength / state.patternLength;
+  state.seedLength = Math.max(
+    1,
+    Math.min(newPatternLength - 1, Math.round(state.seedLength * lengthRatio))
+  );
+  state.patternLength = newPatternLength;
+  onPatternUpdated();
+  if (Tone.Transport.state === 'started') {
+    playPattern();
+  }
+}
+
+function updatePlayPauseIcons() {
+  if (Tone.Transport.state === 'started') {
+    document.querySelector('.playpause .pause-icon').style.display = null;
+    document.querySelector('.playpause .play-icon').style.display = 'none';
+  } else {
+    document.querySelector('.playpause .play-icon').style.display = null;
+    document.querySelector('.playpause .pause-icon').style.display = 'none';
+  }
+}
+
+function encodeState() {
+  return Object.keys(state)
+    .reduce((a, k) => {
+      a.push(k + '=' + JSON.stringify(state[k]));
+      return a;
+    }, [])
+    .join('&');
+}
+
+WebMidi.enable(err => {
+  if (err) {
+    console.error('WebMidi could not be enabled', err);
+    return;
+  }
+  document.querySelector('.webmidi-enabled').style.display = 'block';
+  let outputSelector = document.querySelector('.midi-output');
+
+  function onOutputsChange() {
+    while (outputSelector.firstChild) {
+      outputSelector.firstChild.remove();
+    }
+    let internalOption = document.createElement('option');
+    internalOption.value = 'internal';
+    internalOption.innerText = 'Internal drumkit';
+    outputSelector.appendChild(internalOption);
+    for (let output of WebMidi.outputs) {
+      let option = document.createElement('option');
+      option.value = output.id;
+      option.innerText = output.name;
+      outputSelector.appendChild(option);
+    }
+    onActiveOutputChange('internal');
+  }
+
+  function onActiveOutputChange(id) {
+    if (activeOutput !== 'internal') {
+      outputs[activeOutput] = null;
+    }
+    activeOutput = id;
+    if (activeOutput !== 'internal') {
+      let output = WebMidi.getOutputById(id);
+      outputs[id] = {
+        play: (drumIdx, velo, time) => {
+          let delay = (time - Tone.now()) * 1000;
+          let duration = Tone.Time('16n').toMilliseconds();
+          let velocity = { high: 1, med: 0.75, low: 0.5 };
+          output.playNote(midiDrums[drumIdx], 1, {
+            time: delay > 0 ? `+${delay}` : WebMidi.now,
+            velocity,
+            duration
+          });
+        }
+      };
+    }
+    for (let option of Array.from(outputSelector.children)) {
+      option.selected = option.value === id;
+    }
+  }
+
+  onOutputsChange();
+  WebMidi.addListener('connected', onOutputsChange);
+  WebMidi.addListener('disconnected', onOutputsChange);
+  $(outputSelector)
+    .on('change', evt => onActiveOutputChange(evt.target.value))
+    .material_select();
+});
+
+document.querySelector('.app').addEventListener('click', event => {
+  if (event.target.classList.contains('cell')) {
+    toggleStep(event.target);
+  }
+});
+document.querySelector('.regenerate').addEventListener('click', event => {
+  event.preventDefault();
+  event.currentTarget.classList.remove('pulse');
+  document.querySelector('.playpause').classList.remove('pulse');
+  regenerate().then(() => {
+    if (!hasBeenStarted) {
+      Tone.context.resume();
+      Tone.Transport.start();
+      updatePlayPauseIcons();
+      hasBeenStarted = true;
+    }
+    if (Tone.Transport.state === 'started') {
+      setTimeout(() => playPattern(), 0);
+    }
+  });
+});
+document.querySelector('.playpause').addEventListener('click', event => {
+  event.preventDefault();
+  document.querySelector('.playpause').classList.remove('pulse');
+  if (Tone.Transport.state !== 'started') {
+    Tone.context.resume();
+    Tone.Transport.start();
+    playPattern();
+    updatePlayPauseIcons();
+    hasBeenStarted = true;
+  } else {
     if (sequence) {
       sequence.dispose();
       sequence = null;
     }
-    renderPattern();
+    Tone.Transport.pause();
+    updatePlayPauseIcons();
   }
-
-  function toggleStep(cellEl) {
-    if (state.pattern && cellEl.classList.contains('cell')) {
-      let stepIdx = +cellEl.dataset.stepIdx;
-      let cellIdx = +cellEl.dataset.cellIdx;
-      let isOn = cellEl.classList.contains('on');
-      if (isOn) {
-        _.pull(state.pattern[stepIdx], cellIdx);
-        cellEl.classList.remove('on');
-      } else {
-        state.pattern[stepIdx].push(cellIdx);
-        cellEl.classList.add('on');
-      }
-      if (sequence) {
-        sequence.at(stepIdx, { stepIdx, drums: state.pattern[stepIdx] });
-      }
-      setDensityValue();
-      densityRange = null;
-    }
-  }
-
-  function setDensityValue() {
-    let totalCellCount = state.pattern.length * 9;
-    let activeCellCount = _.sum(state.pattern.map(p => p.length));
-    let density = activeCellCount / totalCellCount;
-    let roundedDensity = Math.round(density / 0.05) * 0.05;
-    document.querySelector('#density').value = roundedDensity;
-  }
-
-  function updateDensityRange(
-    density = +document.querySelector('#density').value
-  ) {
-    let stepsDown = density / 0.05;
-    let stepsUp = (0.75 - density) / 0.05;
-    let stepsBeyond = 0.25 / 0.05;
-
-    let emptySeq = toNoteSequence([]);
-    let fullSeq = toNoteSequence(
-      _.times(state.pattern.length, () => _.range(9))
-    );
-    let currentSeq = toNoteSequence(state.pattern);
-
-    densityRange = [];
-    let interpsUp = stepsDown > 0 ? vae.interpolate([emptySeq, currentSeq], stepsDown) : Promise.resolve([]);
-    let interpsDown = stepsUp > 0 ? vae.interpolate(
-        [currentSeq, fullSeq],
-        stepsUp + stepsBeyond
-      ) : Promise.resolve([]);
-      
-    interpsDown.then(interps => {
-      for (let noteSeq of interps) {
-        densityRange.push(fromNoteSequence(noteSeq, state.pattern.length));
-      }
-    }).then(() => densityRange.push(state.pattern))
-      .then(() => interpsUp)
-      .then(interps => {
-        for (let noteSeq of interps) {
-          if (stepsUp-- > 0) {
-            densityRange.push(fromNoteSequence(noteSeq, state.pattern.length));
-          }
-        }
-      });
-  }
-
-  function toNoteSequence(pattern) {
-    return mm.sequences.quantizeNoteSequence(
-      {
-        ticksPerQuarter: 220,
-        totalTime: pattern.length / 2,
-        timeSignatures: [
-          {
-            time: 0,
-            numerator: 4,
-            denominator: 4
-          }
-        ],
-        tempos: [
-          {
-            time: 0,
-            qpm: 120
-          }
-        ],
-        notes: _.flatMap(pattern, (step, index) =>
-          step.map(d => ({
-            pitch: midiDrums[d],
-            startTime: index * 0.5,
-            endTime: (index + 1) * 0.5
-          }))
-        )
-      },
-      1
-    );
-  }
-
-  function fromNoteSequence({ notes }, patternLength) {
-    let res = _.times(patternLength, () => []);
-    for (let { pitch, quantizedStartStep } of notes) {
-      res[quantizedStartStep].push(reverseMidiMapping.get(pitch));
-    }
-    return res;
-  }
-  
-  function setSwing(newSwing) {
-    state.swing = newSwing;
-    renderPattern();
-  }
-
-  function setPatternLength(newPatternLength) {
-    if (newPatternLength < state.patternLength) {
-      state.pattern.length = newPatternLength;
-    } else {
-      for (let i = state.pattern.length; i < newPatternLength; i++) {
-        state.pattern.push([]);
-      }
-    }
-    let lengthRatio = newPatternLength / state.patternLength;
-    state.seedLength = Math.max(
-      1,
-      Math.min(newPatternLength - 1, Math.round(state.seedLength * lengthRatio))
-    );
-    state.patternLength = newPatternLength;
-    onPatternUpdated();
-    if (Tone.Transport.state === 'started') {
-      playPattern();
-    }
-  }
-
-  function updatePlayPauseIcons() {
-    if (Tone.Transport.state === 'started') {
-      document.querySelector('.playpause .pause-icon').style.display = null;
-      document.querySelector('.playpause .play-icon').style.display = 'none';
-    } else {
-      document.querySelector('.playpause .play-icon').style.display = null;
-      document.querySelector('.playpause .pause-icon').style.display = 'none';
-    }
-  }
-
-  function encodeState() {
-    return Object.keys(state)
-      .reduce((a, k) => {
-        a.push(k + '=' + JSON.stringify(state[k]));
-        return a;
-      }, [])
-      .join('&');
-  }
-
-  WebMidi.enable(err => {
-    if (err) {
-      console.error('WebMidi could not be enabled', err);
-      return;
-    }
-    document.querySelector('.webmidi-enabled').style.display = 'block';
-    let outputSelector = document.querySelector('.midi-output');
-
-    function onOutputsChange() {
-      while (outputSelector.firstChild) {
-        outputSelector.firstChild.remove();
-      }
-      let internalOption = document.createElement('option');
-      internalOption.value = 'internal';
-      internalOption.innerText = 'Internal drumkit';
-      outputSelector.appendChild(internalOption);
-      for (let output of WebMidi.outputs) {
-        let option = document.createElement('option');
-        option.value = output.id;
-        option.innerText = output.name;
-        outputSelector.appendChild(option);
-      }
-      onActiveOutputChange('internal');
-    }
-
-    function onActiveOutputChange(id) {
-      if (activeOutput !== 'internal') {
-        outputs[activeOutput] = null;
-      }
-      activeOutput = id;
-      if (activeOutput !== 'internal') {
-        let output = WebMidi.getOutputById(id);
-        outputs[id] = {
-          play: (drumIdx, velo, time) => {
-            let delay = (time - Tone.now()) * 1000;
-            let duration = Tone.Time('16n').toMilliseconds();
-            let velocity = { high: 1, med: 0.75, low: 0.5 };
-            output.playNote(midiDrums[drumIdx], 1, {
-              time: delay > 0 ? `+${delay}` : WebMidi.now,
-              velocity,
-              duration
-            });
-          }
-        };
-      }
-      for (let option of Array.from(outputSelector.children)) {
-        option.selected = option.value === id;
-      }
-    }
-
-    onOutputsChange();
-    WebMidi.addListener('connected', onOutputsChange);
-    WebMidi.addListener('disconnected', onOutputsChange);
-    $(outputSelector)
-      .on('change', evt => onActiveOutputChange(evt.target.value))
-      .material_select();
-  });
-
-  document.querySelector('.app').addEventListener('click', event => {
-    if (event.target.classList.contains('cell')) {
-      toggleStep(event.target);
-    }
-  });
-  document.querySelector('.regenerate').addEventListener('click', event => {
-    event.preventDefault();
-    event.currentTarget.classList.remove('pulse');
-    document.querySelector('.playpause').classList.remove('pulse');
-    regenerate().then(() => {
-      if (!hasBeenStarted) {
-        Tone.context.resume();
-        Tone.Transport.start();
-        updatePlayPauseIcons();
-        hasBeenStarted = true;
-      }
-      if (Tone.Transport.state === 'started') {
-        setTimeout(() => playPattern(), 0);
-      }
-    });
-  });
-  document.querySelector('.playpause').addEventListener('click', event => {
-    event.preventDefault();
-    document.querySelector('.playpause').classList.remove('pulse');
-    if (Tone.Transport.state !== 'started') {
-      Tone.context.resume();
-      Tone.Transport.start();
-      playPattern();
-      updatePlayPauseIcons();
-      hasBeenStarted = true;
-    } else {
-      if (sequence) {
-        sequence.dispose();
-        sequence = null;
-      }
-      Tone.Transport.pause();
-      updatePlayPauseIcons();
-    }
-  });
-
-  let draggingSeedMarker = false;
-  document.querySelector('.app').addEventListener('mousedown', evt => {
-    let el = evt.target;
-    if (
-      el.classList.contains('gutter') &&
-      el.classList.contains('seed-marker')
-    ) {
-      draggingSeedMarker = true;
-      evt.preventDefault();
-    }
-  });
-  document.querySelector('.app').addEventListener('mouseup', () => {
-    draggingSeedMarker = false;
-  });
-  document.querySelector('.app').addEventListener('mouseover', evt => {
-    if (draggingSeedMarker) {
-      let el = evt.target;
-      while (el) {
-        if (el.classList.contains('step')) {
-          let stepIdx = +el.dataset.stepIdx;
-          if (stepIdx > 0) {
-            state.seedLength = stepIdx;
-            renderPattern();
-          }
-          break;
-        }
-        el = el.parentElement;
-      }
-    }
-  });
-  document.querySelector('#density').addEventListener('input', evt => {
-    let newDensity = +evt.target.value;
-    let patternIndex = Math.round(newDensity / 0.05);
-    if (_.isNull(densityRange)) {
-      updateDensityRange(newDensity);
-    }
-    if (
-      densityRange &&
-      patternIndex >= 0 &&
-      patternIndex < densityRange.length - 1
-    ) {
-      state.pattern = densityRange[patternIndex];
-      renderPattern();
-      if (sequence) {
-        state.pattern.forEach((drums, stepIdx) =>
-          sequence.at(stepIdx, { stepIdx, drums })
-        );
-      }
-    }
-  });
-  document
-    .querySelector('#swing')
-    .addEventListener('input', evt => setSwing(+evt.target.value));
-  document
-    .querySelector('#temperature')
-    .addEventListener('input', evt =>
-      temperature = +evt.target.value
-    );
-  document
-    .querySelector('#tempo')
-    .addEventListener(
-      'input',
-      evt => (Tone.Transport.bpm.value = state.tempo = +evt.target.value)
-    );
-
-  window.addEventListener('resize', repositionRegenerateButton);
-
-  renderPattern();
-  setDensityValue();
-  
-  document.querySelector('.progress').remove();
-  document.querySelector('.app').style.display = null;
 });
+
+let draggingSeedMarker = false;
+document.querySelector('.app').addEventListener('mousedown', evt => {
+  let el = evt.target;
+  if (
+    el.classList.contains('gutter') &&
+    el.classList.contains('seed-marker')
+  ) {
+    draggingSeedMarker = true;
+    evt.preventDefault();
+  }
+});
+document.querySelector('.app').addEventListener('mouseup', () => {
+  draggingSeedMarker = false;
+});
+document.querySelector('.app').addEventListener('mouseover', evt => {
+  if (draggingSeedMarker) {
+    let el = evt.target;
+    while (el) {
+      if (el.classList.contains('step')) {
+        let stepIdx = +el.dataset.stepIdx;
+        if (stepIdx > 0) {
+          state.seedLength = stepIdx;
+          renderPattern();
+        }
+        break;
+      }
+      el = el.parentElement;
+    }
+  }
+});
+document.querySelector('#density').addEventListener('input', evt => {
+  let newDensity = +evt.target.value;
+  let patternIndex = Math.round(newDensity / 0.05);
+  if (_.isNull(densityRange)) {
+    updateDensityRange(newDensity);
+  }
+  if (
+    densityRange &&
+    patternIndex >= 0 &&
+    patternIndex < densityRange.length - 1
+  ) {
+    state.pattern = densityRange[patternIndex];
+    renderPattern();
+    if (sequence) {
+      state.pattern.forEach((drums, stepIdx) =>
+        sequence.at(stepIdx, { stepIdx, drums })
+      );
+    }
+  }
+});
+document
+  .querySelector('#swing')
+  .addEventListener('input', evt => setSwing(+evt.target.value));
+document
+  .querySelector('#temperature')
+  .addEventListener('input', evt =>
+    temperature = +evt.target.value
+  );
+document
+  .querySelector('#tempo')
+  .addEventListener(
+    'input',
+    evt => (Tone.Transport.bpm.value = state.tempo = +evt.target.value)
+  );
+
+window.addEventListener('resize', repositionRegenerateButton);
+
+renderPattern();
+setDensityValue();
+
+document.querySelector('.progress').remove();
+document.querySelector('.app').style.display = null;
 
 </script>
 
